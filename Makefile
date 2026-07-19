@@ -1,4 +1,4 @@
-.PHONY: help up down run migrate test stub
+.PHONY: help up down run migrate test stub demo
 
 help:
 	@echo "make up       - start Postgres + Redis (docker compose)"
@@ -7,6 +7,7 @@ help:
 	@echo "make run      - run the Wallet Service locally"
 	@echo "make test     - run the test suite"
 	@echo "make stub     - run the Order Service stub against a running service"
+	@echo "make demo     - run the curl walkthrough against a running service"
 
 up:
 	docker compose up -d
@@ -26,3 +27,6 @@ test:
 
 stub:
 	python order_service_stub.py
+
+demo:
+	./demo.sh

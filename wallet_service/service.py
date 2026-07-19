@@ -15,7 +15,9 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from redis import Redis
 from sqlalchemy.exc import IntegrityError
@@ -33,6 +35,18 @@ logger = get_logger(__name__)
 
 CREATED_STATUS = 201
 REPLAY_STATUS = 200
+
+# Timestamps are stored in UTC but surfaced to clients in India Standard Time.
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def _to_ist_isoformat(value: datetime | None) -> str | None:
+    """Render a stored timestamp as an ISO-8601 string in IST (+05:30)."""
+    if value is None:
+        return None
+    # A naive value from the DB is UTC; make it aware before converting.
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(IST).isoformat()
 
 
 @dataclass
@@ -66,7 +80,7 @@ def _transaction_view(tx: Transaction) -> dict[str, Any]:
         "amount_paise": tx.amount_paise,
         "balance_after_paise": tx.balance_after_paise,
         "reference_id": tx.reference_id,
-        "created_at": tx.created_at.isoformat() if tx.created_at else None,
+        "created_at": _to_ist_isoformat(tx.created_at),
     }
 
 

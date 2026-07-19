@@ -4,11 +4,14 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 SERVICE_NAME = "wallet-service"
 ENVIRONMENT = os.getenv("ENVIRONMENT", "local")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+IST = ZoneInfo("Asia/Kolkata")
 
 # Standard LogRecord attributes we don't want to duplicate in the JSON payload.
 _RESERVED = set(logging.makeLogRecord({}).__dict__.keys()) | {"extra_fields"}
@@ -19,7 +22,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "timestamp": self.formatTime(record),
+            "timestamp": datetime.fromtimestamp(record.created, IST).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "service": SERVICE_NAME,

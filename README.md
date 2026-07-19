@@ -58,20 +58,25 @@ correctness guarantee lives in Postgres, not in the application.
 # 2. In another terminal, run the Order Service integration demo
 python order_service_stub.py
 
-# 3. Run the tests (requires the docker services above to be up)
+# 3. Walk through every endpoint with curl (idempotency + balance constraint)
+./demo.sh
+
+# 4. Run the tests (requires the docker services above to be up)
 make test
 ```
 
-`pgAdmin` connects to Postgres on `localhost:5432` (user/pass/db = `wallet`).
+`pgAdmin` connects to Postgres on `localhost:5432` (user/pass/db = `wallet`); paste the
+inspection queries in `queries.sql` to eyeball balances and the ledger.
 `Redis Insight` connects to Redis on `localhost:6379`.
 
-Makefile shortcuts: `make up | down | migrate | run | test | stub`.
+Makefile shortcuts: `make up | down | migrate | run | test | stub | demo`.
 
 ---
 
 ## API
 
-All amounts are **integer paise** (100 paise = ₹1). Errors are always
+All amounts are **integer paise** (100 paise = ₹1). Timestamps are returned in
+**India Standard Time** (ISO-8601 with a `+05:30` offset). Errors are always
 `{"error": {"code": "...", "message": "..."}}`.
 
 | Method | Path | Purpose | Success |
@@ -336,7 +341,9 @@ wallet_service/
   openapi.py        # OpenAPI spec
 migrations/         # Alembic migrations
 tests/              # integration tests (concurrency-focused)
-order_service_stub.py
+order_service_stub.py  # Order Service integration demo (Python)
+demo.sh             # curl walkthrough of every endpoint
+queries.sql         # ad-hoc inspection queries for pgAdmin
 docker-compose.yml  # postgres + redis (+ wallet under `full` profile)
 Dockerfile  Makefile  startup.sh
 ```
