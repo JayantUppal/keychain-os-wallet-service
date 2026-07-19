@@ -1,0 +1,49 @@
+# Postgres (source of truth) + Redis (locking + balance cache) for the Wallet Service.
+# Ports are exposed so pgAdmin (5432) and Redis Insight (6379) can connect directly.
+services:
+  postgres:
+    image: postgres:16
+    container_name: wallet_postgres
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet
+    ports:
+      - "5432:5432"
+    volumes:
+      - wallet_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: wallet_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  wallet:
+    build: .
+    container_name: wallet_service
+    environment:
+      DATABASE_URL: postgresql+psycopg2://wallet:wallet@postgres:5432/wallet
+      REDIS_URL: redis://redis:6379/0
+      FLASK_PORT: "5000"
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles: ["full"]  # `docker compose --profile full up` to also run the app
+
+volumes:
+  wallet_pg_data:
