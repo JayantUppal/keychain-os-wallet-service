@@ -10,6 +10,44 @@ locking + balance caching).
 
 ---
 
+## Architecture
+
+The Order Service is a black box: it calls the Wallet Service over HTTP to deduct ₹100 when a
+customer places an order. The Wallet Service owns all money state; Postgres is the source of
+truth and Redis is a performance layer that is never trusted for correctness.
+
+```mermaid
+flowchart LR
+    Customer(["Customer"])
+    OS["Order Service<br/>(black box / stub)"]
+
+    subgraph WS["Wallet Service (Flask)"]
+        direction TB
+        R["routes / ops<br/>HTTP + validation"]
+        S["service<br/>lock · idempotency · balance rule"]
+        Repo["repository<br/>pure SQL"]
+        R --> S --> Repo
+    end
+
+    PG[("PostgreSQL<br/>source of truth<br/>+ CHECK constraints")]
+    RD[("Redis<br/>per-wallet lock<br/>+ balance cache")]
+
+    Customer -->|"topup / balance"| WS
+    Customer -->|"place order"| OS
+    OS -->|"POST /deduct (idempotent)"| WS
+    Repo -->|"SELECT ... FOR UPDATE<br/>ledger writes"| PG
+    S -.->|"lock · cache"| RD
+
+    classDef store fill:#eef,stroke:#88a;
+    class PG,RD store;
+```
+
+Requests flow through thin layers — **routes** (HTTP only) → **service** (business rules) →
+**repository** (pure SQL). See [Key design decisions](#key-design-decisions) for why the
+correctness guarantee lives in Postgres, not in the application.
+
+---
+
 ## Quick start
 
 ```bash
@@ -27,7 +65,7 @@ make test
 `pgAdmin` connects to Postgres on `localhost:5432` (user/pass/db = `wallet`).
 `Redis Insight` connects to Redis on `localhost:6379`.
 
-Makefile shortcuts: `make up | down | migrate | run | test | lint | stub`.
+Makefile shortcuts: `make up | down | migrate | run | test | stub`.
 
 ---
 
@@ -68,16 +106,42 @@ curl -X POST localhost:5000/wallets/$ID/deduct \
 
 ## Data model
 
-```
-wallets                       transactions (append-only ledger)      processed_requests (idempotency)
--------                       ---------------------------------      --------------------------------
-id            UUID PK         id                  UUID PK            idempotency_key   PK
-customer_id                   wallet_id           FK -> wallets      wallet_id         FK -> wallets
-balance_paise BIGINT          type   TOPUP|DEDUCT                    endpoint
-created_at                    amount_paise        > 0                request_fingerprint
-updated_at                    balance_after_paise >= 0               response_body
-                              reference_id (order id, indexed)       status_code
-CHECK balance_paise >= 0      created_at                             created_at
+`wallets` holds the authoritative balance. `transactions` is an append-only ledger — one
+immutable row per money movement, carrying the running `balance_after`. `processed_requests`
+records the outcome of each idempotent request so retries never double-charge.
+
+```mermaid
+erDiagram
+    wallets ||--o{ transactions : "has ledger of"
+    wallets ||--o{ processed_requests : "has idempotency keys"
+
+    wallets {
+        uuid   id PK
+        string customer_id
+        bigint balance_paise "CHECK >= 0"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    transactions {
+        uuid   id PK
+        uuid   wallet_id FK "indexed"
+        string type "topup | deduct"
+        bigint amount_paise "CHECK > 0"
+        bigint balance_after_paise "CHECK >= 0"
+        string reference_id "order id, indexed"
+        timestamptz created_at
+    }
+
+    processed_requests {
+        string idempotency_key PK
+        uuid   wallet_id FK "indexed"
+        string endpoint
+        string request_fingerprint
+        text   response_body
+        int    status_code
+        timestamptz created_at
+    }
 ```
 
 **Invariants enforced by the database, not just code:**
@@ -85,6 +149,49 @@ CHECK balance_paise >= 0      created_at                             created_at
 - `CHECK (amount_paise > 0)` — no zero/negative movements.
 - `processed_requests.idempotency_key` is the primary key — a key is recorded at most once.
 - Foreign keys + `NOT NULL` everywhere; indexes on `wallet_id` and `reference_id`.
+
+---
+
+## Request lifecycle: an idempotent deduction
+
+This is the hard path — where concurrency, retries, and the balance rule all meet. The
+Redis lock keeps writers off the same DB row; the row lock (`FOR UPDATE`) is the real
+guarantee; the `processed_requests` row makes retries return the original response.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OS as Order Service
+    participant S as WalletService
+    participant RD as Redis
+    participant PG as Postgres
+
+    OS->>S: POST /deduct (Idempotency-Key = order id)
+    S->>RD: acquire per-wallet lock
+    S->>PG: lookup processed_requests[key]
+
+    alt key already processed (retry)
+        PG-->>S: stored response
+        S-->>OS: 200 replay (no second deduction)
+    else first time
+        Note over S,PG: BEGIN transaction
+        S->>PG: SELECT ... FOR UPDATE (lock wallet row)
+        alt balance >= amount
+            S->>PG: UPDATE balance, INSERT ledger + processed_requests
+            Note over S,PG: COMMIT (all-or-nothing)
+            S->>RD: refresh cached balance
+            S-->>OS: 201 created
+        else balance < amount
+            Note over S,PG: ROLLBACK
+            S-->>OS: 422 insufficient_balance
+        end
+    end
+    S->>RD: release lock
+```
+
+If the app crashes anywhere inside the transaction, Postgres rolls it back — no partial
+write — and the Redis lock auto-expires. The `CHECK (balance_paise >= 0)` constraint is the
+final backstop even if the application logic is wrong.
 
 ---
 

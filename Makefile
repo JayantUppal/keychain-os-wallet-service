@@ -1,4 +1,4 @@
-.PHONY: help up down run migrate test lint stub
+.PHONY: help up down run migrate test stub
 
 help:
 	@echo "make up       - start Postgres + Redis (docker compose)"
@@ -6,7 +6,6 @@ help:
 	@echo "make migrate  - apply database migrations (alembic)"
 	@echo "make run      - run the Wallet Service locally"
 	@echo "make test     - run the test suite"
-	@echo "make lint     - run ruff + mypy"
 	@echo "make stub     - run the Order Service stub against a running service"
 
 up:
@@ -24,10 +23,6 @@ run:
 
 test:
 	pytest -v
-
-lint:
-	ruff check wallet_service tests
-	mypy wallet_service
 
 stub:
 	python order_service_stub.py

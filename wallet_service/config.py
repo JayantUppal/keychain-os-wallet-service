@@ -22,9 +22,6 @@ class Config:
     )
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
-    # Default deduction amount used by the Order Service stub (10000 paise = ₹100).
-    deduct_amount_paise: int = _env_int("DEDUCT_AMOUNT_PAISE", 10000)
-
     # How long a lock is held before it auto-expires, and how long we wait to get it.
     lock_timeout_seconds: int = _env_int("LOCK_TIMEOUT_SECONDS", 10)
     lock_blocking_timeout_seconds: int = _env_int("LOCK_BLOCKING_TIMEOUT_SECONDS", 5)
