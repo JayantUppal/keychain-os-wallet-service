@@ -23,6 +23,16 @@ def get_wallet_for_update(session: Session, wallet_id: str) -> Wallet | None:
     return session.scalars(stmt).first()
 
 
+def get_transaction(session: Session, transaction_id: str) -> Transaction | None:
+    return session.get(Transaction, transaction_id)
+
+
+def get_refund_for_original(session: Session, original_transaction_id: str) -> Transaction | None:
+    """Return the refund that reverses the given transaction, if one exists."""
+    stmt = select(Transaction).where(Transaction.original_transaction_id == original_transaction_id)
+    return session.scalars(stmt).first()
+
+
 def add_transaction(
     session: Session,
     wallet_id: str,
@@ -30,6 +40,8 @@ def add_transaction(
     amount_paise: int,
     balance_after_paise: int,
     reference_id: str | None,
+    original_transaction_id: str | None = None,
+    reason: str | None = None,
 ) -> Transaction:
     tx = Transaction(
         wallet_id=wallet_id,
@@ -37,6 +49,8 @@ def add_transaction(
         amount_paise=amount_paise,
         balance_after_paise=balance_after_paise,
         reference_id=reference_id,
+        original_transaction_id=original_transaction_id,
+        reason=reason,
     )
     session.add(tx)
     session.flush()

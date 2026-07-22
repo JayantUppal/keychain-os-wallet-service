@@ -19,3 +19,10 @@ TOPUPS = Counter(
     "Topup attempts by outcome.",
     labelnames=("outcome",),  # success | replay
 )
+
+REFUNDS = Counter(
+    "wallet_refunds_total",
+    "Refund attempts by outcome.",
+    # success | replay | not_found | already_refunded | not_refundable | would_overdraw
+    labelnames=("outcome",),
+)

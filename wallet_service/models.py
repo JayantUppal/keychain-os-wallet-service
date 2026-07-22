@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -29,6 +30,10 @@ from .db import Base
 
 TOPUP = "topup"
 DEDUCT = "deduct"
+REFUND = "refund"
+
+# The transaction types a refund is allowed to reverse. A refund itself is not refundable.
+REFUNDABLE_TYPES = frozenset({TOPUP, DEDUCT})
 
 
 def _new_uuid() -> str:
@@ -54,7 +59,12 @@ class Wallet(Base):
 
 
 class Transaction(Base):
-    """Immutable ledger entry. reference_id links to a business event (e.g. order_id)."""
+    """Immutable ledger entry. reference_id links to a business event (e.g. order_id).
+
+    A REFUND entry reverses exactly one earlier TOPUP or DEDUCT. It points back to that
+    entry via original_transaction_id. The unique constraint on original_transaction_id lets
+    the database itself guarantee a transaction can be refunded at most once.
+    """
 
     __tablename__ = "transactions"
     __table_args__ = (
@@ -62,16 +72,25 @@ class Transaction(Base):
         CheckConstraint(
             "balance_after_paise >= 0", name="ck_transaction_balance_after_non_negative"
         ),
+        # Postgres treats NULLs as distinct, so non-refund rows (NULL) are unaffected while
+        # at most one refund can exist per original transaction.
+        UniqueConstraint("original_transaction_id", name="uq_transaction_original_transaction_id"),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_new_uuid)
     wallet_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("wallets.id"), nullable=False, index=True
     )
-    type: Mapped[str] = mapped_column(String(16), nullable=False)  # TOPUP or DEDUCT
+    type: Mapped[str] = mapped_column(String(16), nullable=False)  # topup | deduct | refund
     amount_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
     balance_after_paise: Mapped[int] = mapped_column(BigInteger, nullable=False)
     reference_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    # Set only on REFUND rows: the ledger entry this refund reverses.
+    original_transaction_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("transactions.id"), nullable=True
+    )
+    # Optional, human-supplied justification for a refund.
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

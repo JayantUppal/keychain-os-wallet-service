@@ -9,7 +9,7 @@ from flask import Blueprint, current_app, jsonify, request
 from pydantic import BaseModel, ValidationError
 
 from .errors import InvalidRequestError
-from .schemas import CreateWalletRequest, DeductRequest, TopupRequest
+from .schemas import CreateWalletRequest, DeductRequest, RefundRequest, TopupRequest
 from .service import WalletService
 
 api = Blueprint("api", __name__)
@@ -65,6 +65,19 @@ def deduct(wallet_id: str) -> tuple[Any, int]:
             f"(send the {IDEMPOTENCY_HEADER} header or 'idempotency_key' in the body)"
         )
     result = _service().deduct(wallet_id, data.amount_paise, data.reference_id, key)
+    return jsonify(result.body), result.status_code
+
+
+@api.post("/wallets/<wallet_id>/refund")
+def refund(wallet_id: str) -> tuple[Any, int]:
+    data: RefundRequest = _parse(RefundRequest)  # type: ignore[assignment]
+    key = _idempotency_key(data.idempotency_key)
+    if key is None:
+        raise InvalidRequestError(
+            "An idempotency key is required for refunds "
+            f"(send the {IDEMPOTENCY_HEADER} header or 'idempotency_key' in the body)"
+        )
+    result = _service().refund(wallet_id, data.original_transaction_id, data.reason, key)
     return jsonify(result.body), result.status_code
 
 

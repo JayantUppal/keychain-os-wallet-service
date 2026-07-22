@@ -22,6 +22,34 @@ class WalletNotFoundError(WalletError):
     code = "wallet_not_found"
 
 
+class TransactionNotFoundError(WalletError):
+    """Referenced original transaction does not exist for this wallet."""
+
+    status_code = 404
+    code = "transaction_not_found"
+
+
+class TransactionNotRefundableError(WalletError):
+    """The referenced transaction cannot be refunded (e.g. it is itself a refund)."""
+
+    status_code = 422
+    code = "transaction_not_refundable"
+
+
+class TransactionAlreadyRefundedError(WalletError):
+    """A refund already exists for the referenced transaction."""
+
+    status_code = 409
+    code = "transaction_already_refunded"
+
+
+class RefundWouldOverdrawError(WalletError):
+    """Refunding this topup would drive the wallet balance negative."""
+
+    status_code = 422
+    code = "refund_would_overdraw"
+
+
 class IdempotencyConflictError(WalletError):
     """Same idempotency key reused with a different request body."""
 

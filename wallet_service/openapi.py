@@ -20,10 +20,12 @@ _TRANSACTION = {
     "properties": {
         "id": {"type": "string", "format": "uuid"},
         "wallet_id": {"type": "string", "format": "uuid"},
-        "type": {"type": "string", "enum": ["topup", "deduct"]},
+        "type": {"type": "string", "enum": ["topup", "deduct", "refund"]},
         "amount_paise": {"type": "integer"},
         "balance_after_paise": {"type": "integer"},
         "reference_id": {"type": "string", "nullable": True},
+        "original_transaction_id": {"type": "string", "format": "uuid", "nullable": True},
+        "reason": {"type": "string", "nullable": True},
         "created_at": {"type": "string", "format": "date-time"},
     },
 }
@@ -133,6 +135,40 @@ OPENAPI_SPEC: dict[str, Any] = {
                     "409": _json_response("Idempotency key reused with a different body", _ERROR),
                     "422": _json_response("Insufficient balance", _ERROR),
                     "404": _json_response("Wallet not found", _ERROR),
+                },
+            }
+        },
+        "/wallets/{id}/refund": {
+            "post": {
+                "summary": "Refund a topup or deduct (idempotent)",
+                "description": "Reverses exactly one earlier topup or deduct. Refunding a "
+                "deduct credits the wallet; refunding a topup debits it. Refunds are "
+                "full-amount only and each transaction can be refunded at most once.",
+                "parameters": [_id_param(), _idempotency_header()],
+                "requestBody": _json_body(
+                    {
+                        "type": "object",
+                        "required": ["original_transaction_id"],
+                        "properties": {
+                            "original_transaction_id": {"type": "string", "format": "uuid"},
+                            "idempotency_key": {"type": "string", "nullable": True},
+                            "reason": {"type": "string", "nullable": True, "maxLength": 500},
+                        },
+                    }
+                ),
+                "responses": {
+                    "201": _json_response("Refund applied", _TRANSACTION),
+                    "200": _json_response("Idempotent replay", _TRANSACTION),
+                    "400": _json_response("Missing idempotency key or invalid body", _ERROR),
+                    "404": _json_response("Wallet or original transaction not found", _ERROR),
+                    "409": _json_response(
+                        "Idempotency key reused with a different body, or already refunded",
+                        _ERROR,
+                    ),
+                    "422": _json_response(
+                        "Transaction not refundable, or refund would overdraw the wallet",
+                        _ERROR,
+                    ),
                 },
             }
         },

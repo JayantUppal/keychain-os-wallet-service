@@ -61,7 +61,10 @@ python order_service_stub.py
 # 3. Walk through every endpoint with curl (idempotency + balance constraint)
 ./demo.sh
 
-# 4. Run the tests (requires the docker services above to be up)
+# 4. Walk through the refund flow with curl (applies migrations first)
+make demo-refund
+
+# 5. Run the tests (requires the docker services above to be up)
 make test
 ```
 
@@ -69,7 +72,11 @@ make test
 inspection queries in `queries.sql` to eyeball balances and the ledger.
 `Redis Insight` connects to Redis on `localhost:6379`.
 
-Makefile shortcuts: `make up | down | migrate | run | test | stub | demo`.
+Makefile shortcuts: `make up | down | migrate | run | restart | test | stub | demo | demo-refund`.
+
+> **Schema change:** refunds add columns to `transactions`. After pulling this change, run
+> `make migrate` (or `make restart` for the dockerized service, which migrates on boot) and
+> restart the service so it serves the new code.
 
 ---
 
@@ -84,6 +91,7 @@ All amounts are **integer paise** (100 paise = ₹1). Timestamps are returned in
 | POST | `/wallets` | Create a wallet | 201 |
 | POST | `/wallets/:id/topup` | Add funds | 201 (200 on idempotent replay) |
 | POST | `/wallets/:id/deduct` | Deduct for an order (idempotent) | 201 (200 on replay) |
+| POST | `/wallets/:id/refund` | Refund a topup or deduct (idempotent) | 201 (200 on replay) |
 | GET | `/wallets/:id/balance` | Current balance | 200 |
 | GET | `/wallets/:id/transactions` | Ledger history (newest first) | 200 |
 | GET | `/health` | DB + Redis health, uptime | 200 / 503 |
@@ -100,11 +108,24 @@ curl -X POST localhost:5000/wallets/$ID/deduct \
   -d '{"amount_paise": 10000, "reference_id": "order-123"}'
 ```
 
+**Refunds** reverse exactly one earlier topup or deduct. Refunding a **deduct credits** the
+wallet; refunding a **topup debits** it. Refunds are **full-amount only** (no partial
+refunds), each transaction can be refunded **at most once**, and — like deductions — a
+refund **requires an idempotency key**. The ledger stays immutable: the original row is
+never touched; a new `refund` row is appended, linked via `original_transaction_id`.
+
+```bash
+curl -X POST localhost:5000/wallets/$ID/refund \
+  -H 'Idempotency-Key: refund-123' \
+  -H 'Content-Type: application/json' \
+  -d '{"original_transaction_id": "'$TX_ID'", "reason": "customer cancelled"}'
+```
+
 ### Status codes
 - `400` invalid request (bad/missing amount, missing idempotency key)
-- `404` wallet not found
-- `409` idempotency key reused with a *different* body
-- `422` insufficient balance
+- `404` wallet not found, or original transaction not found for this wallet
+- `409` idempotency key reused with a *different* body, or transaction already refunded
+- `422` insufficient balance, transaction not refundable, or a topup refund would overdraw
 - `503` wallet temporarily busy (lock contention) / dependency down
 
 ---
@@ -131,10 +152,12 @@ erDiagram
     transactions {
         uuid   id PK
         uuid   wallet_id FK "indexed"
-        string type "topup | deduct"
+        string type "topup | deduct | refund"
         bigint amount_paise "CHECK > 0"
         bigint balance_after_paise "CHECK >= 0"
         string reference_id "order id, indexed"
+        uuid   original_transaction_id FK "refund -> original, UNIQUE"
+        string reason "optional, refunds only"
         timestamptz created_at
     }
 
@@ -153,6 +176,8 @@ erDiagram
 - `CHECK (balance_paise >= 0)` — a negative balance is physically unstorable.
 - `CHECK (amount_paise > 0)` — no zero/negative movements.
 - `processed_requests.idempotency_key` is the primary key — a key is recorded at most once.
+- `UNIQUE (original_transaction_id)` — a transaction can be refunded at most once (NULLs are
+  distinct in Postgres, so non-refund rows are unaffected).
 - Foreign keys + `NOT NULL` everywhere; indexes on `wallet_id` and `reference_id`.
 
 ---
@@ -262,8 +287,10 @@ Small interfaces make each layer independently testable and replaceable.
 - **Structured JSON logs** (`logging_config.py`) with a request id, method, path, status, and
   latency for every request, plus domain events (`wallet deduct` with old/new balance,
   transaction id, reference id). In production these lines become metrics and trace spans.
-- **Prometheus `/metrics`**: request latency histogram, deduction/topup counters by outcome
-  (`success | insufficient_balance | replay`) — e.g. deduction success rate and p99 latency.
+- **Prometheus `/metrics`**: request latency histogram, deduction/topup/refund counters by
+  outcome (e.g. deductions: `success | insufficient_balance | replay`; refunds:
+  `success | replay | not_found | already_refunded | not_refundable | would_overdraw`) —
+  e.g. deduction success rate and p99 latency.
 - **`/health`**: verifies Postgres and Redis connectivity and reports uptime; returns `503`
   when a dependency is down (ready for a load balancer / k8s probe).
 
@@ -286,6 +313,10 @@ idempotency cannot be validated against a fake. Coverage includes:
 - **Multiple topups** accumulate correctly.
 - **Ledger correctness** — every movement recorded with the right running `balance_after`.
 - **Error handling** — unknown wallet `404`, invalid amount `400`, missing key `400`.
+- **Refunds** — deduct refund credits, topup refund debits; full-amount only; idempotent
+  replay; at-most-once (`409`); topup refund overdraw guard (`422`); a refund can't be
+  refunded (`422`); the original ledger row stays immutable; and concurrent refunds of one
+  transaction (same key or distinct keys) apply exactly once.
 
 Run with `make test` (docker services must be up).
 
@@ -296,6 +327,7 @@ Run with `make test` (docker services must be up).
 | Scenario | Behaviour |
 |----------|-----------|
 | Order Service retries a deduct (network timeout) | Idempotency key → original response, no double charge |
+| A refund is retried, or two refunds race for one transaction | Wallet row lock + `UNIQUE(original_transaction_id)` → applied exactly once |
 | Two deducts race on the same wallet | Row lock serializes them; balance never oversold |
 | App crashes mid-deduction | Transaction rolls back; no partial write; lock auto-released |
 | Redis lock expires early | DB row lock + `CHECK` constraint still guarantee correctness |
@@ -343,6 +375,7 @@ migrations/         # Alembic migrations
 tests/              # integration tests (concurrency-focused)
 order_service_stub.py  # Order Service integration demo (Python)
 demo.sh             # curl walkthrough of every endpoint
+refund_demo.sh      # curl walkthrough of the refund flow
 queries.sql         # ad-hoc inspection queries for pgAdmin
 docker-compose.yml  # postgres + redis (+ wallet under `full` profile)
 Dockerfile  Makefile  startup.sh

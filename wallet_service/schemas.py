@@ -23,3 +23,9 @@ class DeductRequest(_StrictModel):
     amount_paise: int = Field(gt=0)
     reference_id: str | None = None
     idempotency_key: str | None = None
+
+
+class RefundRequest(_StrictModel):
+    original_transaction_id: str = Field(min_length=1)
+    idempotency_key: str | None = None
+    reason: str | None = Field(default=None, max_length=500)
